@@ -8,47 +8,48 @@ $todayFile = Join-Path $NotesDir "$Today.md"
 $cutoffDate = (Get-Date).AddDays(-7)
 $incompleteTasks = @()
 
-# --- Step 1: Scan past 7 days and migrate incomplete tasks ---
+# --- Step 1: Collect incomplete tasks from past 7 days ---
 Get-ChildItem -Path $NotesDir -Filter *.md | Where-Object {
     $_.Name -ne "$Today.md" -and
     ($_.BaseName -as [datetime]) -ge $cutoffDate
 } | ForEach-Object {
     $filePath = $_.FullName
-    $lines = Get-Content $filePath
-    $newLines = @()
+    $originalLines = [System.IO.File]::ReadAllLines($filePath)
+    $updatedLines = @()
 
-    foreach ($line in $lines) {
+    foreach ($line in $originalLines) {
         if ($line -match '^\s*-\s\[\s\]\s') {
             $incompleteTasks += $line.Trim()
-            $newLines += $line -replace '^\s*-\s\[\s\]\s', '- [-->] '
+            $updatedLines += $line -replace '^\s*-\s\[\s\]\s', '- [-->] '
         } else {
-            $newLines += $line
+            $updatedLines += $line
         }
     }
 
-    [System.IO.File]::WriteAllLines($filePath, $newLines, [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllLines($filePath, $updatedLines, [System.Text.UTF8Encoding]::new($false))
 }
 
-# --- Step 2: Create today's note if it doesn't exist ---
+# --- Step 2: Build today's file if missing ---
 if (-not (Test-Path $todayFile)) {
-    $initLines = @("# Daily Operator Log - $Today")
-    $initLines += Get-Content $Template
+    $header = "# Daily Operator Log - $Today"
+    $template = [System.IO.File]::ReadAllLines($Template)
+    $initLines = @($header) + $template
     [System.IO.File]::WriteAllLines($todayFile, $initLines, [System.Text.UTF8Encoding]::new($false))
 }
 
-# --- Step 3: Inject migrated tasks into ## Task Review ---
+# --- Step 3: Inject migrated tasks under '## Task Review' ---
 if ($incompleteTasks.Count -gt 0) {
-    $lines = Get-Content $todayFile
-    $outLines = @()
+    $todayLines = [System.IO.File]::ReadAllLines($todayFile)
+    $finalLines = @()
     $injected = $false
 
-    foreach ($line in $lines) {
-        $outLines += $line
+    foreach ($line in $todayLines) {
+        $finalLines += $line
         if (-not $injected -and $line -match '^## Task Review') {
-            $outLines += $incompleteTasks
+            $finalLines += $incompleteTasks
             $injected = $true
         }
     }
 
-    [System.IO.File]::WriteAllLines($todayFile, $outLines, [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllLines($todayFile, $finalLines, [System.Text.UTF8Encoding]::new($false))
 }
