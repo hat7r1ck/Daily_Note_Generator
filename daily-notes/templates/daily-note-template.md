@@ -16,7 +16,7 @@
 **Blockers:**
 - [if any]
 
-# Projects and Notes
+---
 ## Projects
 - [if any]
 
