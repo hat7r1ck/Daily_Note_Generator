@@ -9,6 +9,20 @@ param (
     [string]$Template
 )
 
+# --- Script Setup ---
+$ErrorActionPreference = "Stop" # Makes most cmdlet errors terminating
+$utf8NoBom = [System.Text.UTF8Encoding]::new($false) # For consistent UTF-8 without BOM output
+
+# --- Initial Path Validations ---
+if (-not (Test-Path $NotesDir -PathType Container)) {
+    Write-Error "Notes directory '$NotesDir' not found or is not a directory."
+    exit 1
+}
+if (-not (Test-Path $Template -PathType Leaf)) {
+    Write-Error "Template file '$Template' not found or is not a file."
+    exit 1
+}
+
 # --- Date and Path Setup ---
 $todayDateObj = $null
 try {
@@ -17,6 +31,8 @@ try {
         $normalizedTodayString = "{0:D4}-{1:D2}-{2:D2}" -f [int]$todayParts[0], [int]$todayParts[1], [int]$todayParts[2]
         $todayDateObj = [datetime]::ParseExact($normalizedTodayString, "yyyy-MM-dd", $null)
     } else {
+        # This throw will now be caught by the script's top-level try/catch if $ErrorActionPreference is Stop,
+        # or by the explicit catch block here. The exit 1 will still work.
         throw "Invalid format for -Today parameter: '$Today'. Expected yyyy-M-d format."
     }
 } catch {
@@ -37,12 +53,9 @@ $incompleteTasks = [System.Collections.Generic.List[string]]::new()
 
 # --- Step 1: Scan past 7 days for incomplete tasks (RECURSIVELY) ---
 Write-Host "Scanning notes under '$NotesDir' (recursive). Cutoff date: $($cutoffDate.ToString('yyyy-MM-dd'))"
-# Added -Recurse to search subdirectories
 Get-ChildItem -Path $NotesDir -Filter *.md -Recurse -File | ForEach-Object {
     $fileDate = $null
     try {
-        # $file.BaseName is just the filename without extension, e.g., "2023-12-27"
-        # This should work fine even if the file is in a subdirectory.
         $baseNameParts = $_.BaseName.Split('-')
         if ($baseNameParts.Count -eq 3 -and ($baseNameParts[0] -match '^\d{4}$') -and ($baseNameParts[1] -match '^\d{1,2}$') -and ($baseNameParts[2] -match '^\d{1,2}$')) {
             $normalizedFileDateString = "{0:D4}-{1:D2}-{2:D2}" -f [int]$baseNameParts[0], [int]$baseNameParts[1], [int]$baseNameParts[2]
@@ -52,15 +65,13 @@ Get-ChildItem -Path $NotesDir -Filter *.md -Recurse -File | ForEach-Object {
         # Silently ignore files with non-date names or add: Write-Warning "Could not parse date from filename: $($_.FullName)"
     }
 
-    # Filter conditions
-    # Compare full path of current file with the expected full path of today's file
-    if ($_.FullName -ne $todayFile -and       # Exclude the file for the specified $Today
-        $fileDate -ne $null -and            # Ensure a date was successfully parsed from filename
-        $fileDate -ge $cutoffDate -and      # File date is on or after the cutoff
-        $fileDate -lt $todayDateObj) {      # File date is *before* the specified $Today
+    if ($_.FullName -ne $todayFile -and
+        $fileDate -ne $null -and
+        $fileDate -ge $cutoffDate -and
+        $fileDate -lt $todayDateObj) {
 
         $filePath = $_.FullName
-        $lines = [System.IO.File]::ReadAllLines($filePath)
+        $lines = [System.IO.File]::ReadAllLines($filePath) # ReadAllLines auto-detects encoding
         $newLines = [System.Collections.Generic.List[string]]::new()
         $fileModified = $false
 
@@ -76,23 +87,23 @@ Get-ChildItem -Path $NotesDir -Filter *.md -Recurse -File | ForEach-Object {
         }
 
         if ($fileModified) {
-            [System.IO.File]::WriteAllLines($filePath, $newLines.ToArray(), [System.Text.UTF8Encoding]::new($false))
+            [System.IO.File]::WriteAllLines($filePath, $newLines.ToArray(), $utf8NoBom)
         }
     }
 }
 
 # --- Step 2: Create today's file from template if needed ---
 if (-not (Test-Path $todayFile)) {
-    # Ensure the YYYY/MM directory structure exists for today's note
     if (-not (Test-Path $todayNoteDirPath)) {
         Write-Host "Creating directory: $todayNoteDirPath"
         New-Item -ItemType Directory -Path $todayNoteDirPath -Force | Out-Null
     }
 
     $header = "# Daily Operator Log - $($todayDateObj.ToString('yyyy-MM-dd'))`r`n"
-    $templateContent = [System.IO.File]::ReadAllText($Template, [System.Text.Encoding]::UTF8)
+    # ReadAllText with specific Encoding.UTF8 handles BOMs correctly on read
+    $templateContent = [System.IO.File]::ReadAllText($Template, [System.Text.Encoding]::UTF8) 
     $fullContent = $header + "`r`n" + $templateContent
-    [System.IO.File]::WriteAllText($todayFile, $fullContent, [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText($todayFile, $fullContent, $utf8NoBom)
     Write-Host "Created today's note: $todayFile"
 } else {
     Write-Host "Today's note already exists: $todayFile"
@@ -100,8 +111,8 @@ if (-not (Test-Path $todayFile)) {
 
 # --- Step 3: Inject tasks under '## Task Review' ---
 if ($incompleteTasks.Count -gt 0) {
-    # Ensure today's file actually exists before trying to read/write (it should if created in Step 2)
     if (Test-Path $todayFile) {
+        # ReadAllText with specific Encoding.UTF8 handles BOMs correctly on read
         $content = [System.IO.File]::ReadAllText($todayFile, [System.Text.Encoding]::UTF8)
         $pattern = '(?m)^## Task Review\s*'
 
@@ -110,7 +121,7 @@ if ($incompleteTasks.Count -gt 0) {
             $tasksBlockWithTrailingNewline = ($incompleteTasks -join "`r`n") + "`r`n"
             $replacementString = $taskReviewHeaderText + "`r`n" + "`r`n" + $tasksBlockWithTrailingNewline
             $content = [regex]::Replace($content, $pattern, $replacementString, 1)
-            [System.IO.File]::WriteAllText($todayFile, $content, [System.Text.UTF8Encoding]::new($false))
+            [System.IO.File]::WriteAllText($todayFile, $content, $utf8NoBom)
             Write-Host "Injected $($incompleteTasks.Count) tasks into $todayFile"
         } else {
             Write-Warning "Section '## Task Review' not found in '$todayFile'. $($incompleteTasks.Count) tasks were collected but NOT injected."
