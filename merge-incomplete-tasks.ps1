@@ -1,44 +1,37 @@
-param (
-    [Parameter(Mandatory=$true)]
-    [string]$NotesDir, # Should be the root, e.g., "daily-notes"
-
-    [Parameter(Mandatory=$true)]
-    [string]$Today, # Expected to be like "2024-01-03" or "2024-1-3"
-
-    [Parameter(Mandatory=$true)]
-    [string]$Template
-)
-
 # --- Script Setup ---
+# This script is designed to be run directly.
+# It will determine paths and today's date automatically.
+
 $ErrorActionPreference = "Stop" # Makes most cmdlet errors terminating
 $utf8NoBom = [System.Text.UTF8Encoding]::new($false) # For consistent UTF-8 without BOM output
 
-# --- Initial Path Validations ---
+# --- Determine Paths and Today's Date (Logic from Batch File) ---
+# Get the directory where this script is located
+$scriptRoot = Split-Path -Path $MyInvocation.MyCommand.Definition -Parent
+
+# Define paths relative to the script's location
+$NotesDir = Join-Path -Path $scriptRoot -ChildPath "daily-notes"
+$Template = Join-Path -Path $scriptRoot -ChildPath "daily-notes\templates\daily-note-template.md"
+
+# Get today's date in yyyy-MM-dd format
+$todayDateObj = Get-Date
+$Today = $todayDateObj.ToString("yyyy-MM-dd") # This is the string format for the -Today logic
+
+# --- Initial Path Validations (Copied from previous script version) ---
 if (-not (Test-Path $NotesDir -PathType Container)) {
-    Write-Error "Notes directory '$NotesDir' not found or is not a directory."
+    Write-Error "Notes directory '$NotesDir' not found or is not a directory. Expected it at the same level as the script, in a 'daily-notes' subfolder."
     exit 1
 }
 if (-not (Test-Path $Template -PathType Leaf)) {
-    Write-Error "Template file '$Template' not found or is not a file."
+    Write-Error "Template file '$Template' not found or is not a file. Expected it at '$scriptRoot\daily-notes\templates\daily-note-template.md'."
     exit 1
 }
 
-# --- Date and Path Setup ---
-$todayDateObj = $null
-try {
-    $todayParts = $Today.Split('-')
-    if ($todayParts.Count -eq 3 -and ($todayParts[0] -match '^\d{4}$') -and ($todayParts[1] -match '^\d{1,2}$') -and ($todayParts[2] -match '^\d{1,2}$')) {
-        $normalizedTodayString = "{0:D4}-{1:D2}-{2:D2}" -f [int]$todayParts[0], [int]$todayParts[1], [int]$todayParts[2]
-        $todayDateObj = [datetime]::ParseExact($normalizedTodayString, "yyyy-MM-dd", $null)
-    } else {
-        # This throw will now be caught by the script's top-level try/catch if $ErrorActionPreference is Stop,
-        # or by the explicit catch block here. The exit 1 will still work.
-        throw "Invalid format for -Today parameter: '$Today'. Expected yyyy-M-d format."
-    }
-} catch {
-    Write-Error "Error parsing -Today parameter '$Today': $($_.Exception.Message)"
-    exit 1 # Exit if $Today cannot be parsed
-}
+# --- Main Script Logic (Copied and adapted from previous script version) ---
+
+Write-Host "Daily Note Automation Started for: $Today"
+Write-Host "Notes Directory: $NotesDir"
+Write-Host "Template File: $Template"
 
 $yearForPath = $todayDateObj.ToString("yyyy")
 $monthForPath = $todayDateObj.ToString("MM")
@@ -68,10 +61,10 @@ Get-ChildItem -Path $NotesDir -Filter *.md -Recurse -File | ForEach-Object {
     if ($_.FullName -ne $todayFile -and
         $fileDate -ne $null -and
         $fileDate -ge $cutoffDate -and
-        $fileDate -lt $todayDateObj) {
+        $fileDate -lt $todayDateObj) { # Process notes strictly *before* today
 
         $filePath = $_.FullName
-        $lines = [System.IO.File]::ReadAllLines($filePath) # ReadAllLines auto-detects encoding
+        $lines = [System.IO.File]::ReadAllLines($filePath)
         $newLines = [System.Collections.Generic.List[string]]::new()
         $fileModified = $false
 
@@ -100,8 +93,7 @@ if (-not (Test-Path $todayFile)) {
     }
 
     $header = "# Daily Operator Log - $($todayDateObj.ToString('yyyy-MM-dd'))`r`n"
-    # ReadAllText with specific Encoding.UTF8 handles BOMs correctly on read
-    $templateContent = [System.IO.File]::ReadAllText($Template, [System.Text.Encoding]::UTF8) 
+    $templateContent = [System.IO.File]::ReadAllText($Template, [System.Text.Encoding]::UTF8)
     $fullContent = $header + "`r`n" + $templateContent
     [System.IO.File]::WriteAllText($todayFile, $fullContent, $utf8NoBom)
     Write-Host "Created today's note: $todayFile"
@@ -112,7 +104,6 @@ if (-not (Test-Path $todayFile)) {
 # --- Step 3: Inject tasks under '## Task Review' ---
 if ($incompleteTasks.Count -gt 0) {
     if (Test-Path $todayFile) {
-        # ReadAllText with specific Encoding.UTF8 handles BOMs correctly on read
         $content = [System.IO.File]::ReadAllText($todayFile, [System.Text.Encoding]::UTF8)
         $pattern = '(?m)^## Task Review\s*'
 
@@ -132,3 +123,5 @@ if ($incompleteTasks.Count -gt 0) {
 }
 
 Write-Host "Processing complete for $($todayDateObj.ToString('yyyy-MM-dd'))"
+Write-Host "Press any key to exit..."
+[System.Console]::ReadKey($true) | Out-Null # Keeps window open until a key is pressed
