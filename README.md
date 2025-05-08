@@ -4,17 +4,23 @@ Creates a daily markdown log from a template, and migrates incomplete tasks from
 
 ## How It Works
 
-- Notes are saved in `daily-notes/YYYY/MM/YYYY-MM-DD.md`
-- The batch script creates today’s note if it doesn’t exist
+- Notes are saved in `daily-notes/YYYY/MM/YYYY-MM-DD.md`.
+- The batch script (e.g., `LaunchDailyNotes.bat`) runs the PowerShell script (e.g., `Run-DailyNotes.ps1`).
+- The PowerShell script itself automatically determines the current date and necessary file paths (assuming a `daily-notes` subfolder relative to its location).
+- The PowerShell script creates today’s note from the template if it doesn’t exist, including `YYYY/MM` subdirectories.
 - Incomplete tasks (`- [ ]`) from the past 7 days are:
   - Moved to today’s note under `## Task Review`
   - Replaced with `- [-->]` in original files
 
 ## Usage
 
-1. Clone or download this repo
-2. Double-click `generate-daily-note.bat`
-3. Today’s note will be generated and populated
+1.  **Setup:**
+    *   Place the PowerShell script (e.g., `Run-DailyNotes.ps1`) AND the batch file (e.g., `LaunchDailyNotes.bat`) in your main project folder.
+    *   Ensure a `daily-notes` subfolder exists next to these scripts, containing a `templates/daily-note-template.md` file.
+    *   Existing notes should be in the `daily-notes/YYYY/MM/YYYY-MM-DD.md` structure.
+
+2.  Double-click the batch file (e.g., `LaunchDailyNotes.bat`).
+3.  Today’s note will be generated and populated. The PowerShell window will stay open until you press a key.
 
 ## Customize
 
