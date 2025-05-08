@@ -1,50 +1,44 @@
-# --- Script Setup ---
-# This script is designed to be run directly.
-# It will determine paths and today's date automatically.
+# File: Run-DailyNotes.ps1
 
-$ErrorActionPreference = "Stop" # Makes most cmdlet errors terminating
-$utf8NoBom = [System.Text.UTF8Encoding]::new($false) # For consistent UTF-8 without BOM output
+# Script Setup
+$ErrorActionPreference = "Stop"
+$utf8NoBom = [System.Text.UTF8Encoding]::new($false)
 
-# --- Determine Paths and Today's Date (Logic from Batch File) ---
-# Get the directory where this script is located
+# Determine Paths and Today's Date
 $scriptRoot = Split-Path -Path $MyInvocation.MyCommand.Definition -Parent
-
-# Define paths relative to the script's location
 $NotesDir = Join-Path -Path $scriptRoot -ChildPath "daily-notes"
 $Template = Join-Path -Path $scriptRoot -ChildPath "daily-notes\templates\daily-note-template.md"
-
-# Get today's date in yyyy-MM-dd format
 $todayDateObj = Get-Date
-$Today = $todayDateObj.ToString("yyyy-MM-dd") # This is the string format for the -Today logic
+$Today = $todayDateObj.ToString("yyyy-MM-dd")
 
-# --- Initial Path Validations (Copied from previous script version) ---
+# Initial Path Validations
 if (-not (Test-Path $NotesDir -PathType Container)) {
-    Write-Error "Notes directory '$NotesDir' not found or is not a directory. Expected it at the same level as the script, in a 'daily-notes' subfolder."
+    Write-Error "FATAL: Notes directory '$NotesDir' not found. Expected a 'daily-notes' subfolder in the same directory as this script."
+    Write-Host "Press any key to exit..."
+    [System.Console]::ReadKey($true) | Out-Null
     exit 1
 }
 if (-not (Test-Path $Template -PathType Leaf)) {
-    Write-Error "Template file '$Template' not found or is not a file. Expected it at '$scriptRoot\daily-notes\templates\daily-note-template.md'."
+    Write-Error "FATAL: Template file '$Template' not found. Expected it inside '$($NotesDir)\templates\daily-note-template.md'."
+    Write-Host "Press any key to exit..."
+    [System.Console]::ReadKey($true) | Out-Null
     exit 1
 }
 
-# --- Main Script Logic (Copied and adapted from previous script version) ---
-
+# Main Script Logic
 Write-Host "Daily Note Automation Started for: $Today"
 Write-Host "Notes Directory: $NotesDir"
 Write-Host "Template File: $Template"
 
 $yearForPath = $todayDateObj.ToString("yyyy")
 $monthForPath = $todayDateObj.ToString("MM")
-$todayFileName = $todayDateObj.ToString("yyyy-MM-dd") # Filename itself
-
-# Construct the full path for today's note including YYYY/MM subdirectories
+$todayFileName = $todayDateObj.ToString("yyyy-MM-dd")
 $todayNoteDirPath = Join-Path $NotesDir $yearForPath $monthForPath
 $todayFile = Join-Path $todayNoteDirPath "$todayFileName.md"
-
 $cutoffDate = $todayDateObj.AddDays(-7)
 $incompleteTasks = [System.Collections.Generic.List[string]]::new()
 
-# --- Step 1: Scan past 7 days for incomplete tasks (RECURSIVELY) ---
+# Step 1: Scan past notes
 Write-Host "Scanning notes under '$NotesDir' (recursive). Cutoff date: $($cutoffDate.ToString('yyyy-MM-dd'))"
 Get-ChildItem -Path $NotesDir -Filter *.md -Recurse -File | ForEach-Object {
     $fileDate = $null
@@ -54,59 +48,43 @@ Get-ChildItem -Path $NotesDir -Filter *.md -Recurse -File | ForEach-Object {
             $normalizedFileDateString = "{0:D4}-{1:D2}-{2:D2}" -f [int]$baseNameParts[0], [int]$baseNameParts[1], [int]$baseNameParts[2]
             $fileDate = [datetime]::ParseExact($normalizedFileDateString, "yyyy-MM-dd", $null)
         }
-    } catch {
-        # Silently ignore files with non-date names or add: Write-Warning "Could not parse date from filename: $($_.FullName)"
-    }
+    } catch {}
 
-    if ($_.FullName -ne $todayFile -and
-        $fileDate -ne $null -and
-        $fileDate -ge $cutoffDate -and
-        $fileDate -lt $todayDateObj) { # Process notes strictly *before* today
-
+    if ($_.FullName -ne $todayFile -and $fileDate -ne $null -and $fileDate -ge $cutoffDate -and $fileDate -lt $todayDateObj) {
         $filePath = $_.FullName
         $lines = [System.IO.File]::ReadAllLines($filePath)
         $newLines = [System.Collections.Generic.List[string]]::new()
         $fileModified = $false
-
         foreach ($line in $lines) {
             if ($line -match '^\s*-\s\[\s\]\s(.*)') {
                 $taskDescription = $Matches[1].Trim()
                 $incompleteTasks.Add("- [ ] $taskDescription")
                 $newLines.Add(($line -replace '^\s*-\s\[\s\]\s', '- [-->] '))
                 $fileModified = $true
-            } else {
-                $newLines.Add($line)
-            }
+            } else { $newLines.Add($line) }
         }
-
-        if ($fileModified) {
-            [System.IO.File]::WriteAllLines($filePath, $newLines.ToArray(), $utf8NoBom)
-        }
+        if ($fileModified) { [System.IO.File]::WriteAllLines($filePath, $newLines.ToArray(), $utf8NoBom) }
     }
 }
 
-# --- Step 2: Create today's file from template if needed ---
+# Step 2: Create today's file
 if (-not (Test-Path $todayFile)) {
     if (-not (Test-Path $todayNoteDirPath)) {
         Write-Host "Creating directory: $todayNoteDirPath"
         New-Item -ItemType Directory -Path $todayNoteDirPath -Force | Out-Null
     }
-
     $header = "# Daily Operator Log - $($todayDateObj.ToString('yyyy-MM-dd'))`r`n"
     $templateContent = [System.IO.File]::ReadAllText($Template, [System.Text.Encoding]::UTF8)
     $fullContent = $header + "`r`n" + $templateContent
     [System.IO.File]::WriteAllText($todayFile, $fullContent, $utf8NoBom)
     Write-Host "Created today's note: $todayFile"
-} else {
-    Write-Host "Today's note already exists: $todayFile"
-}
+} else { Write-Host "Today's note already exists: $todayFile" }
 
-# --- Step 3: Inject tasks under '## Task Review' ---
+# Step 3: Inject tasks
 if ($incompleteTasks.Count -gt 0) {
     if (Test-Path $todayFile) {
         $content = [System.IO.File]::ReadAllText($todayFile, [System.Text.Encoding]::UTF8)
         $pattern = '(?m)^## Task Review\s*'
-
         if ($content -match $pattern) {
             $taskReviewHeaderText = "## Task Review"
             $tasksBlockWithTrailingNewline = ($incompleteTasks -join "`r`n") + "`r`n"
@@ -114,14 +92,10 @@ if ($incompleteTasks.Count -gt 0) {
             $content = [regex]::Replace($content, $pattern, $replacementString, 1)
             [System.IO.File]::WriteAllText($todayFile, $content, $utf8NoBom)
             Write-Host "Injected $($incompleteTasks.Count) tasks into $todayFile"
-        } else {
-            Write-Warning "Section '## Task Review' not found in '$todayFile'. $($incompleteTasks.Count) tasks were collected but NOT injected."
-        }
-    } else {
-        Write-Warning "Today's note '$todayFile' was expected but not found for task injection. This shouldn't happen."
-    }
+        } else { Write-Warning "Section '## Task Review' not found in '$todayFile'. Tasks NOT injected." }
+    } else { Write-Warning "Today's note '$todayFile' not found for task injection." }
 }
 
 Write-Host "Processing complete for $($todayDateObj.ToString('yyyy-MM-dd'))"
 Write-Host "Press any key to exit..."
-[System.Console]::ReadKey($true) | Out-Null # Keeps window open until a key is pressed
+[System.Console]::ReadKey($true) | Out-Null
