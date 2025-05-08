@@ -1,14 +1,11 @@
 ## Task Review
-- [Review] Review incomplete items from yesterday
-- [Migrate] Migrate or drop anything not worth finishing
+
 
 ## Today’s Tasks
-- [Task] Task 1
-- [Task] Task 2
+- [Review] Review incomplete items from yesterday
+- [Drop] Drop anything not worth finishing
 
 ---
-
-# Jira
 ## Stand-Up
 **Yesterday:**
 - Worked on
@@ -22,8 +19,6 @@
 # Projects and Notes
 ## Projects
 - [if any]
-  - Research, design, build
 
 ## Notes
 - [Dump]
-  - Any ad hoc thoughts or links
