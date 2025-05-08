@@ -1,97 +1,123 @@
 param (
-    [string]$NotesDir,
-    [string]$Today,
+    [Parameter(Mandatory=$true)]
+    [string]$NotesDir, # Should be the root, e.g., "daily-notes"
+
+    [Parameter(Mandatory=$true)]
+    [string]$Today, # Expected to be like "2024-01-03" or "2024-1-3"
+
+    [Parameter(Mandatory=$true)]
     [string]$Template
 )
 
-$todayFile = Join-Path $NotesDir "$Today.md"
-$cutoffDate = (Get-Date).AddDays(-7)
-$incompleteTasks = @()
+# --- Date and Path Setup ---
+$todayDateObj = $null
+try {
+    $todayParts = $Today.Split('-')
+    if ($todayParts.Count -eq 3 -and ($todayParts[0] -match '^\d{4}$') -and ($todayParts[1] -match '^\d{1,2}$') -and ($todayParts[2] -match '^\d{1,2}$')) {
+        $normalizedTodayString = "{0:D4}-{1:D2}-{2:D2}" -f [int]$todayParts[0], [int]$todayParts[1], [int]$todayParts[2]
+        $todayDateObj = [datetime]::ParseExact($normalizedTodayString, "yyyy-MM-dd", $null)
+    } else {
+        throw "Invalid format for -Today parameter: '$Today'. Expected yyyy-M-d format."
+    }
+} catch {
+    Write-Error "Error parsing -Today parameter '$Today': $($_.Exception.Message)"
+    exit 1 # Exit if $Today cannot be parsed
+}
 
-# Step 1: Scan past 7 days for incomplete tasks
-Get-ChildItem -Path $NotesDir -Filter *.md | Where-Object {
+$yearForPath = $todayDateObj.ToString("yyyy")
+$monthForPath = $todayDateObj.ToString("MM")
+$todayFileName = $todayDateObj.ToString("yyyy-MM-dd") # Filename itself
+
+# Construct the full path for today's note including YYYY/MM subdirectories
+$todayNoteDirPath = Join-Path $NotesDir $yearForPath $monthForPath
+$todayFile = Join-Path $todayNoteDirPath "$todayFileName.md"
+
+$cutoffDate = $todayDateObj.AddDays(-7)
+$incompleteTasks = [System.Collections.Generic.List[string]]::new()
+
+# --- Step 1: Scan past 7 days for incomplete tasks (RECURSIVELY) ---
+Write-Host "Scanning notes under '$NotesDir' (recursive). Cutoff date: $($cutoffDate.ToString('yyyy-MM-dd'))"
+# Added -Recurse to search subdirectories
+Get-ChildItem -Path $NotesDir -Filter *.md -Recurse -File | ForEach-Object {
     $fileDate = $null
     try {
-        # Attempt to parse the BaseName as a date.
-        # This assumes filenames like "YYYY-MM-DD.md"
-        # If your $Today variable is "YYYY-MM-DD", this should align.
-        $fileDate = [datetime]::ParseExact($_.BaseName, "yyyy-MM-dd", $null)
+        # $file.BaseName is just the filename without extension, e.g., "2023-12-27"
+        # This should work fine even if the file is in a subdirectory.
+        $baseNameParts = $_.BaseName.Split('-')
+        if ($baseNameParts.Count -eq 3 -and ($baseNameParts[0] -match '^\d{4}$') -and ($baseNameParts[1] -match '^\d{1,2}$') -and ($baseNameParts[2] -match '^\d{1,2}$')) {
+            $normalizedFileDateString = "{0:D4}-{1:D2}-{2:D2}" -f [int]$baseNameParts[0], [int]$baseNameParts[1], [int]$baseNameParts[2]
+            $fileDate = [datetime]::ParseExact($normalizedFileDateString, "yyyy-MM-dd", $null)
+        }
     } catch {
-        # If BaseName is not a parsable date, $fileDate remains $null.
-        # This helps filter out non-date named files.
+        # Silently ignore files with non-date names or add: Write-Warning "Could not parse date from filename: $($_.FullName)"
     }
 
-    $_.Name -ne "$Today.md" -and
-    $fileDate -ne $null -and # Ensure a date was successfully parsed
-    $fileDate -ge $cutoffDate
-} | ForEach-Object {
-    $filePath = $_.FullName
-    $lines = [System.IO.File]::ReadAllLines($filePath) # Auto-detects encoding
-    $newLines = [System.Collections.Generic.List[string]]::new() # Use a generic list for easier Add operations
-    $fileModified = $false
+    # Filter conditions
+    # Compare full path of current file with the expected full path of today's file
+    if ($_.FullName -ne $todayFile -and       # Exclude the file for the specified $Today
+        $fileDate -ne $null -and            # Ensure a date was successfully parsed from filename
+        $fileDate -ge $cutoffDate -and      # File date is on or after the cutoff
+        $fileDate -lt $todayDateObj) {      # File date is *before* the specified $Today
 
-    foreach ($line in $lines) {
-        if ($line -match '^\s*-\s\[\s\]\s(.*)') { # Capture the task description
-            $taskDescription = $Matches[1].Trim() # Get the trimmed task description
-            $incompleteTasks.Add("- [ ] $taskDescription") # Add cleaned-up task to the list
-            $newLines.Add(($line -replace '^\s*-\s\[\s\]\s', '- [-->] ')) # Mark original as migrated
-            $fileModified = $true
-        } else {
-            $newLines.Add($line)
+        $filePath = $_.FullName
+        $lines = [System.IO.File]::ReadAllLines($filePath)
+        $newLines = [System.Collections.Generic.List[string]]::new()
+        $fileModified = $false
+
+        foreach ($line in $lines) {
+            if ($line -match '^\s*-\s\[\s\]\s(.*)') {
+                $taskDescription = $Matches[1].Trim()
+                $incompleteTasks.Add("- [ ] $taskDescription")
+                $newLines.Add(($line -replace '^\s*-\s\[\s\]\s', '- [-->] '))
+                $fileModified = $true
+            } else {
+                $newLines.Add($line)
+            }
+        }
+
+        if ($fileModified) {
+            [System.IO.File]::WriteAllLines($filePath, $newLines.ToArray(), [System.Text.UTF8Encoding]::new($false))
         }
     }
-
-    if ($fileModified) {
-        [System.IO.File]::WriteAllLines($filePath, $newLines.ToArray(), [System.Text.UTF8Encoding]::new($false))
-    }
 }
 
-# Step 2: Create today's file from template if needed
+# --- Step 2: Create today's file from template if needed ---
 if (-not (Test-Path $todayFile)) {
-    $header = "# Daily Operator Log - $Today`r`n"
-    # Read template using ReadAllText and specify UTF-8. This handles BOMs correctly on read.
+    # Ensure the YYYY/MM directory structure exists for today's note
+    if (-not (Test-Path $todayNoteDirPath)) {
+        Write-Host "Creating directory: $todayNoteDirPath"
+        New-Item -ItemType Directory -Path $todayNoteDirPath -Force | Out-Null
+    }
+
+    $header = "# Daily Operator Log - $($todayDateObj.ToString('yyyy-MM-dd'))`r`n"
     $templateContent = [System.IO.File]::ReadAllText($Template, [System.Text.Encoding]::UTF8)
-    $fullContent = $header + "`r`n" + $templateContent # Add blank line between header and template content
+    $fullContent = $header + "`r`n" + $templateContent
     [System.IO.File]::WriteAllText($todayFile, $fullContent, [System.Text.UTF8Encoding]::new($false))
+    Write-Host "Created today's note: $todayFile"
+} else {
+    Write-Host "Today's note already exists: $todayFile"
 }
 
-# Step 3: Inject tasks under '## Task Review'
+# --- Step 3: Inject tasks under '## Task Review' ---
 if ($incompleteTasks.Count -gt 0) {
-    # Read today's file content using ReadAllText and specify UTF-8.
-    $content = [System.IO.File]::ReadAllText($todayFile, [System.Text.Encoding]::UTF8)
-    $pattern = '(?m)^## Task Review\s*' # Matches "## Task Review" and any following whitespace/newlines
+    # Ensure today's file actually exists before trying to read/write (it should if created in Step 2)
+    if (Test-Path $todayFile) {
+        $content = [System.IO.File]::ReadAllText($todayFile, [System.Text.Encoding]::UTF8)
+        $pattern = '(?m)^## Task Review\s*'
 
-    if ($content -match $pattern) {
-        # --- START OF MODIFICATION for precise newline control ---
-
-        # 1. Define the literal text of your header.
-        $taskReviewHeaderText = "## Task Review"
-
-        # 2. Prepare the block of tasks.
-        #    Each task on a new line, and a blank line *after* the entire block of tasks.
-        $tasksBlockWithTrailingNewline = ($incompleteTasks -join "`r`n") + "`r`n"
-
-        # 3. Construct the complete replacement string.
-        #    This will replace everything matched by $pattern (the header and its original following newlines).
-        #    We want: Header Text + Newline_for_Header + ONE_Blank_Line_Separator + Tasks_Block
-        $replacementString = $taskReviewHeaderText + "`r`n" + "`r`n" + $tasksBlockWithTrailingNewline
-        
-        # 4. Perform the replacement using the fully constructed string.
-        #    The ', 1' ensures only the first occurrence is replaced.
-        $content = [regex]::Replace($content, $pattern, $replacementString, 1)
-        
-        # --- END OF MODIFICATION ---
-
-        [System.IO.File]::WriteAllText($todayFile, $content, [System.Text.UTF8Encoding]::new($false))
+        if ($content -match $pattern) {
+            $taskReviewHeaderText = "## Task Review"
+            $tasksBlockWithTrailingNewline = ($incompleteTasks -join "`r`n") + "`r`n"
+            $replacementString = $taskReviewHeaderText + "`r`n" + "`r`n" + $tasksBlockWithTrailingNewline
+            $content = [regex]::Replace($content, $pattern, $replacementString, 1)
+            [System.IO.File]::WriteAllText($todayFile, $content, [System.Text.UTF8Encoding]::new($false))
+            Write-Host "Injected $($incompleteTasks.Count) tasks into $todayFile"
+        } else {
+            Write-Warning "Section '## Task Review' not found in '$todayFile'. $($incompleteTasks.Count) tasks were collected but NOT injected."
+        }
     } else {
-        # Optional: Handle cases where "## Task Review" is not found in today's note.
-        # For now, it will just skip injection if the header isn't present.
-        # You could add logic here to append the section and tasks if desired.
-        Write-Warning "Section '## Task Review' not found in '$todayFile'. $($incompleteTasks.Count) tasks were collected but NOT injected."
-        # Example to append if not found:
-        # $newSectionAndTasks = "`r`n`r`n## Task Review`r`n`r`n" + ($incompleteTasks -join "`r`n") + "`r`n"
-        # $content += $newSectionAndTasks
-        # [System.IO.File]::WriteAllText($todayFile, $content, [System.Text.UTF8Encoding]::new($false))
-        # Write-Host "  Appended '## Task Review' section and tasks to '$todayFile'."
+        Write-Warning "Today's note '$todayFile' was expected but not found for task injection. This shouldn't happen."
     }
 }
+
+Write-Host "Processing complete for $($todayDateObj.ToString('yyyy-MM-dd'))"
