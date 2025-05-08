@@ -1,56 +1,40 @@
-# merge-incomplete-tasks.ps1
-
 param (
-    [Parameter(Mandatory=$true)]
-    [string]$NotesDir,  # Directory containing the markdown notes
-
-    [Parameter(Mandatory=$true)]
-    [string]$Today,     # Date for today's note in "yyyy-MM-dd" format
-
-    [Parameter(Mandatory=$true)]
-    [string]$Template   # Full path to the template file
+    [string]$NotesDir,
+    [string]$Today,
+    [string]$Template
 )
 
-# --- Setup ---
-$ErrorActionPreference = "Stop" # Exit on critical errors
-
-# Define UTF-8 encoding without BOM for all file writing
-$utf8NoBom = [System.Text.UTF8Encoding]::new($false)
-
-# Prepare date objects for comparison
-$todayDateObj = [datetime]::ParseExact($Today, "yyyy-MM-dd", $null)
-$cutoffDate = $todayDateObj.AddDays(-7) # Look back 7 days from the $Today date
-
 $todayFile = Join-Path $NotesDir "$Today.md"
-$incompleteTasks = [System.Collections.Generic.List[string]]::new()
+$cutoffDate = (Get-Date).AddDays(-7)
+$incompleteTasks = @()
 
-# --- Step 1: Scan past notes for incomplete tasks ---
-Write-Host "Scanning notes in '$NotesDir' for incomplete tasks from the last 7 days (excluding '$Today')..."
-Get-ChildItem -Path $NotesDir -Filter *.md -File | ForEach-Object {
+# Step 1: Scan past 7 days for incomplete tasks
+Get-ChildItem -Path $NotesDir -Filter *.md | Where-Object {
     $fileDate = $null
     try {
+        # Attempt to parse the BaseName as a date.
+        # This assumes filenames like "YYYY-MM-DD.md"
+        # If your $Today variable is "YYYY-MM-DD", this should align.
         $fileDate = [datetime]::ParseExact($_.BaseName, "yyyy-MM-dd", $null)
     } catch {
-        return # Skip files with non-date names
+        # If BaseName is not a parsable date, $fileDate remains $null.
+        # This helps filter out non-date named files.
     }
 
-    if ($_.Name -eq "$Today.md" -or $fileDate -eq $null -or $fileDate -lt $cutoffDate -or $fileDate -ge $todayDateObj) {
-        return # Skip this file
-    }
-
+    $_.Name -ne "$Today.md" -and
+    $fileDate -ne $null -and # Ensure a date was successfully parsed
+    $fileDate -ge $cutoffDate
+} | ForEach-Object {
     $filePath = $_.FullName
-    # Write-Host "Processing past note: $filePath" # Uncomment for verbose logging
-    
-    $lines = [System.IO.File]::ReadAllLines($filePath)
-    $newLines = [System.Collections.Generic.List[string]]::new()
+    $lines = [System.IO.File]::ReadAllLines($filePath) # Auto-detects encoding
+    $newLines = [System.Collections.Generic.List[string]]::new() # Use a generic list for easier Add operations
     $fileModified = $false
 
     foreach ($line in $lines) {
-        if ($line -match '^\s*-\s\[\s\]\s(.*)') {
-            $taskDescription = $Matches[1].Trim()
-            $incompleteTasks.Add("- [ ] $taskDescription") # Add clean task
-            
-            $newLines.Add(($line -replace '^\s*-\s\[\s\]\s', '- [-->] '))
+        if ($line -match '^\s*-\s\[\s\]\s(.*)') { # Capture the task description
+            $taskDescription = $Matches[1].Trim() # Get the trimmed task description
+            $incompleteTasks.Add("- [ ] $taskDescription") # Add cleaned-up task to the list
+            $newLines.Add(($line -replace '^\s*-\s\[\s\]\s', '- [-->] ')) # Mark original as migrated
             $fileModified = $true
         } else {
             $newLines.Add($line)
@@ -58,102 +42,56 @@ Get-ChildItem -Path $NotesDir -Filter *.md -File | ForEach-Object {
     }
 
     if ($fileModified) {
-        Write-Host "  Marked tasks as migrated in '$filePath'."
-        [System.IO.File]::WriteAllLines($filePath, $newLines.ToArray(), $utf8NoBom)
+        [System.IO.File]::WriteAllLines($filePath, $newLines.ToArray(), [System.Text.UTF8Encoding]::new($false))
     }
 }
 
-# --- Step 2: Create today's note from template if it doesn't exist ---
-Write-Host "Checking for today's note: '$todayFile'..."
+# Step 2: Create today's file from template if needed
 if (-not (Test-Path $todayFile)) {
-    Write-Host "  Today's note not found. Creating from template: '$Template'..."
-    $header = "# Daily Operator Log - $Today`r`n" 
-    
-    $templateContent = [System.IO.File]::ReadAllText($Template, [System.Text.Encoding]::UTF8) # Read template as UTF-8
-    $fullContent = $header + "`r`n" + $templateContent
-    
-    [System.IO.File]::WriteAllText($todayFile, $fullContent, $utf8NoBom)
-    Write-Host "  Created '$todayFile'."
-} else {
-    Write-Host "  Today's note '$todayFile' already exists."
+    $header = "# Daily Operator Log - $Today`r`n"
+    # Read template using ReadAllText and specify UTF-8. This handles BOMs correctly on read.
+    $templateContent = [System.IO.File]::ReadAllText($Template, [System.Text.Encoding]::UTF8)
+    $fullContent = $header + "`r`n" + $templateContent # Add blank line between header and template content
+    [System.IO.File]::WriteAllText($todayFile, $fullContent, [System.Text.UTF8Encoding]::new($false))
 }
 
-# --- Step 3: Inject collected incomplete tasks into today's note ---
+# Step 3: Inject tasks under '## Task Review'
 if ($incompleteTasks.Count -gt 0) {
-    Write-Host "Injecting $($incompleteTasks.Count) incomplete task(s) into '$todayFile'..."
-    
-    $todayLines = [System.IO.File]::ReadAllLines($todayFile) # Read today's file line-by-line
-    $newTodayLines = [System.Collections.Generic.List[string]]::new()
-    
-    $inTaskReviewSection = $false
-    $tasksInjected = $false
-    $taskReviewHeaderFound = $false
+    # Read today's file content using ReadAllText and specify UTF-8.
+    $content = [System.IO.File]::ReadAllText($todayFile, [System.Text.Encoding]::UTF8)
+    $pattern = '(?m)^## Task Review\s*' # Matches "## Task Review" and any following whitespace/newlines
 
-    for ($i = 0; $i -lt $todayLines.Count; $i++) {
-        $currentLine = $todayLines[$i]
+    if ($content -match $pattern) {
+        # --- START OF MODIFICATION for precise newline control ---
 
-        # Check if we are about to leave the Task Review section
-        # This happens if we were in the section AND the current line is a new H2 (##) or H1 (#) heading
-        # AND it's not the "## Task Review" header itself (in case of re-processing or malformed files).
-        if ($inTaskReviewSection -and ($currentLine -match '^\s*#{1,2}\s+') -and ($currentLine -notmatch '^\s*## Task Review')) {
-            # We've hit the next section. Inject tasks *before* this current line.
-            if (-not $tasksInjected) {
-                # Add a blank line before tasks if the last line added wasn't already blank.
-                if ($newTodayLines.Count -gt 0 -and $newTodayLines[-1].Trim().Length -gt 0) {
-                    $newTodayLines.Add("") 
-                }
-                $incompleteTasks.ForEach({ $newTodayLines.Add($_) })
-                # Add a blank line after tasks, before the new section starts.
-                if ($currentLine.Trim().Length -gt 0) { # Only if next line isn't blank
-                    $newTodayLines.Add("")
-                }
-                $tasksInjected = $true
-            }
-            $inTaskReviewSection = $false # We've now exited the Task Review section
-        }
+        # 1. Define the literal text of your header.
+        $taskReviewHeaderText = "## Task Review"
 
-        $newTodayLines.Add($currentLine) # Add the current line from today's note to our output
+        # 2. Prepare the block of tasks.
+        #    Each task on a new line, and a blank line *after* the entire block of tasks.
+        $tasksBlockWithTrailingNewline = ($incompleteTasks -join "`r`n") + "`r`n"
 
-        # Check if we are entering/in the Task Review section
-        if ($currentLine -match '^\s*## Task Review') {
-            $inTaskReviewSection = $true
-            $taskReviewHeaderFound = $true
-        }
+        # 3. Construct the complete replacement string.
+        #    This will replace everything matched by $pattern (the header and its original following newlines).
+        #    We want: Header Text + Newline_for_Header + ONE_Blank_Line_Separator + Tasks_Block
+        $replacementString = $taskReviewHeaderText + "`r`n" + "`r`n" + $tasksBlockWithTrailingNewline
+        
+        # 4. Perform the replacement using the fully constructed string.
+        #    The ', 1' ensures only the first occurrence is replaced.
+        $content = [regex]::Replace($content, $pattern, $replacementString, 1)
+        
+        # --- END OF MODIFICATION ---
+
+        [System.IO.File]::WriteAllText($todayFile, $content, [System.Text.UTF8Encoding]::new($false))
+    } else {
+        # Optional: Handle cases where "## Task Review" is not found in today's note.
+        # For now, it will just skip injection if the header isn't present.
+        # You could add logic here to append the section and tasks if desired.
+        Write-Warning "Section '## Task Review' not found in '$todayFile'. $($incompleteTasks.Count) tasks were collected but NOT injected."
+        # Example to append if not found:
+        # $newSectionAndTasks = "`r`n`r`n## Task Review`r`n`r`n" + ($incompleteTasks -join "`r`n") + "`r`n"
+        # $content += $newSectionAndTasks
+        # [System.IO.File]::WriteAllText($todayFile, $content, [System.Text.UTF8Encoding]::new($false))
+        # Write-Host "  Appended '## Task Review' section and tasks to '$todayFile'."
     }
-
-    # If tasks haven't been injected yet, it means Task Review was the last section (or only section).
-    if ($inTaskReviewSection -and -not $tasksInjected) {
-        if ($newTodayLines.Count -gt 0 -and $newTodayLines[-1].Trim().Length -gt 0) {
-            $newTodayLines.Add("") # Add a blank line
-        }
-        $incompleteTasks.ForEach({ $newTodayLines.Add($_) })
-        $newTodayLines.Add("") # Add a blank line after tasks at the end of the file
-        $tasksInjected = $true
-    }
-
-    if ($tasksInjected) {
-        [System.IO.File]::WriteAllLines($todayFile, $newTodayLines.ToArray(), $utf8NoBom)
-        Write-Host "  Successfully injected tasks at the end of '## Task Review' section in '$todayFile'."
-    } elseif (-not $taskReviewHeaderFound -and $incompleteTasks.Count -gt 0) {
-        # '## Task Review' section was NOT found at all. Append it.
-        Write-Warning "'## Task Review' section NOT found in '$todayFile'."
-        Write-Host "  Appending '## Task Review' section and tasks to the end of '$todayFile'."
-        if ($newTodayLines.Count -gt 0 -and $newTodayLines[-1].Trim().Length -gt 0) {
-            $newTodayLines.Add("") # Blank line before new section
-        }
-        $newTodayLines.Add("## Task Review")
-        $newTodayLines.Add("") # Blank line after header
-        $incompleteTasks.ForEach({ $newTodayLines.Add($_) })
-        $newTodayLines.Add("") # Blank line after tasks
-        [System.IO.File]::WriteAllLines($todayFile, $newTodayLines.ToArray(), $utf8NoBom)
-        Write-Host "  Appended '## Task Review' and tasks."
-    } elseif ($taskReviewHeaderFound -and -not $tasksInjected -and $incompleteTasks.Count -gt 0) {
-        # This case should ideally not be hit if logic is correct, but good for diagnostics.
-        Write-Warning "  '## Task Review' section was found, but tasks were not injected. This might indicate an unusual file structure or an edge case."
-    }
-
-} else {
-    Write-Host "No incomplete tasks found in past notes to migrate."
 }
-
-Write-Host "Daily note processing complete for $Today."
